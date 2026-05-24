@@ -3,7 +3,7 @@
 
 class TestWide : public ::testing::Test {
 protected:
-	void TestWide::SetUp() override;
+	void SetUp() override;
 protected:
 	CSimpleIniW ini;
 };

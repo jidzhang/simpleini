@@ -368,3 +368,10 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# Test executables and artifacts
+test_lightweight/*.exe
+test_lightweight/*.log
+test_lightweight/*.obj
+_vs_env_tmp.bat
+%SystemDrive%/

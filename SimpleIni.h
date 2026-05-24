@@ -352,19 +352,24 @@ public:
 
         /** Strict less ordering by name of key only */
         struct KeyOrder {
+            const bool * m_pbIsUtf8;
+            KeyOrder(const bool * pbIsUtf8 = NULL) : m_pbIsUtf8(pbIsUtf8) { }
             bool operator()(const Entry & lhs, const Entry & rhs) const {
-                const static SI_STRLESS isLess = SI_STRLESS();
+                bool bIsUtf8 = m_pbIsUtf8 ? *m_pbIsUtf8 : false;
+                SI_STRLESS isLess(bIsUtf8);
                 return isLess(lhs.pItem, rhs.pItem);
             }
         };
 
         /** Strict less ordering by order, and then name of key */
         struct LoadOrder {
+            const bool * m_pbIsUtf8;
+            LoadOrder(const bool * pbIsUtf8 = NULL) : m_pbIsUtf8(pbIsUtf8) { }
             bool operator()(const Entry & lhs, const Entry & rhs) const {
                 if (lhs.nOrder != rhs.nOrder) {
                     return lhs.nOrder < rhs.nOrder;
                 }
-                return KeyOrder()(lhs, rhs);
+                return KeyOrder(m_pbIsUtf8)(lhs, rhs);
             }
         };
     };
@@ -1274,7 +1279,7 @@ private:
 
     /** Internal use of our string comparison function */
     bool IsLess(const SI_CHAR * a_pLeft, const SI_CHAR * a_pRight) const {
-        const static SI_STRLESS isLess = SI_STRLESS();
+        SI_STRLESS isLess(m_bStoreIsUtf8);
         return isLess(a_pLeft, a_pRight);
     }
 
@@ -1362,6 +1367,8 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::CSimpleIniTempl(
   , m_uDataLen(0)
   , m_pFileComment(NULL)
   , m_cEmptyString(0)
+  , m_data(typename TSection::key_compare(
+        typename Entry::KeyOrder(&m_bStoreIsUtf8)))
   , m_bStoreIsUtf8(a_bIsUtf8)
   , m_bAllowMultiKey(a_bAllowMultiKey)
   , m_bAllowMultiLine(a_bAllowMultiLine)
@@ -2071,7 +2078,9 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::AddEntry(
             oSection.pComment = a_pComment;
         }
 
-        typename TSection::value_type oEntry(oSection, TKeyVal());
+        typename TSection::value_type oEntry(oSection,
+            TKeyVal(typename TKeyVal::key_compare(
+                typename Entry::KeyOrder(&m_bStoreIsUtf8))));
         typedef typename TSection::iterator SectionIterator;
         std::pair<SectionIterator,bool> i = m_data.insert(oEntry);
         iSection = i.first;
@@ -2582,9 +2591,9 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::Save(
 #if defined(_MSC_VER) && _MSC_VER <= 1200
     oSections.sort();
 #elif defined(__BORLANDC__)
-    oSections.sort(Entry::LoadOrder());
+    oSections.sort(Entry::LoadOrder(&m_bStoreIsUtf8));
 #else
-    oSections.sort(typename Entry::LoadOrder());
+    oSections.sort(typename Entry::LoadOrder(&m_bStoreIsUtf8));
 #endif
 
     // if there is an empty section name, then it must be written out first
@@ -2647,9 +2656,9 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::Save(
 #if defined(_MSC_VER) && _MSC_VER <= 1200
         oKeys.sort();
 #elif defined(__BORLANDC__)
-        oKeys.sort(Entry::LoadOrder());
+        oKeys.sort(Entry::LoadOrder(&m_bStoreIsUtf8));
 #else
-        oKeys.sort(typename Entry::LoadOrder());
+        oKeys.sort(typename Entry::LoadOrder(&m_bStoreIsUtf8));
 #endif
 
         // write all keys and values
@@ -2878,6 +2887,7 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::DeleteString(
  */
 template<class SI_CHAR>
 struct SI_GenericCase {
+    SI_GenericCase(bool = false) { }
     bool operator()(const SI_CHAR * pLeft, const SI_CHAR * pRight) const {
         long cmp;
         for ( ;*pLeft && *pRight; ++pLeft, ++pRight) {
@@ -2898,6 +2908,7 @@ struct SI_GenericCase {
  */
 template<class SI_CHAR>
 struct SI_GenericNoCase {
+    SI_GenericNoCase(bool = false) { }
     inline SI_CHAR locase(SI_CHAR ch) const {
         return (ch < 'A' || ch > 'Z') ? ch : (ch - 'A' + 'a');
     }
@@ -3459,17 +3470,31 @@ public:
 #else // !SI_NO_MBCS
 /**
  * Case-insensitive comparison class using Win32 MBCS functions. This class
- * returns a case-insensitive semi-collation order for MBCS text. It may not
- * be safe for UTF-8 text returned in char format as we don't know what
- * characters will be folded by the function! Therefore, if you are using
- * SI_CHAR == char and SetUnicode(true), then you need to use the generic
- * SI_NoCase class instead.
+ * returns a case-insensitive semi-collation order for MBCS text. When
+ * configured for UTF-8 mode (bIsUtf8=true), it uses byte-by-byte comparison
+ * with ASCII-only case folding, which is safe for UTF-8 because continuation
+ * bytes are always in the 0x80-0xBF range and never overlap with ASCII A-Z.
  */
 #include <mbstring.h>
 template<class SI_CHAR>
 struct SI_NoCase {
+    bool m_bIsUtf8;
+    SI_NoCase(bool bIsUtf8 = false) : m_bIsUtf8(bIsUtf8) { }
     bool operator()(const SI_CHAR * pLeft, const SI_CHAR * pRight) const {
         if (sizeof(SI_CHAR) == sizeof(char)) {
+            if (m_bIsUtf8) {
+                const unsigned char * l = (const unsigned char *)pLeft;
+                const unsigned char * r = (const unsigned char *)pRight;
+                while (*l && *r) {
+                    unsigned char cl = (*l >= 'A' && *l <= 'Z')
+                        ? (unsigned char)(*l + 32) : *l;
+                    unsigned char cr = (*r >= 'A' && *r <= 'Z')
+                        ? (unsigned char)(*r + 32) : *r;
+                    if (cl != cr) return cl < cr;
+                    ++l; ++r;
+                }
+                return *r != 0;
+            }
             return _mbsicmp((const unsigned char *)pLeft,
                 (const unsigned char *)pRight) < 0;
         }
