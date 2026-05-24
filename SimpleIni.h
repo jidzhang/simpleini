@@ -253,20 +253,20 @@
 # define SI_ASSERT(x)
 #endif
 
-using SI_Error = int;
+typedef int SI_Error;
 
-constexpr int SI_OK = 0;        //!< No error
-constexpr int SI_UPDATED = 1;   //!< An existing value was updated
-constexpr int SI_INSERTED = 2;  //!< A new value was inserted
+const int SI_OK = 0;        //!< No error
+const int SI_UPDATED = 1;   //!< An existing value was updated
+const int SI_INSERTED = 2;  //!< A new value was inserted
 
 // note: test for any error with (retval < 0)
-constexpr int SI_FAIL = -1;     //!< Generic failure
-constexpr int SI_NOMEM = -2;    //!< Out of memory error
-constexpr int SI_FILE = -3;     //!< File error (see errno for detail error)
+const int SI_FAIL = -1;     //!< Generic failure
+const int SI_NOMEM = -2;    //!< Out of memory error
+const int SI_FILE = -3;     //!< File error (see errno for detail error)
 
 //! Maximum supported file size (1 GiB). Files larger than this will be rejected
 //! to prevent excessive memory allocation and potential denial of service.
-constexpr size_t SI_MAX_FILE_SIZE = 1024ULL * 1024ULL * 1024ULL;
+const size_t SI_MAX_FILE_SIZE = 1024ULL * 1024ULL * 1024ULL;
 
 #define SI_UTF8_SIGNATURE     "\xEF\xBB\xBF"
 
@@ -2594,7 +2594,7 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::Save(
         if (!*is->pItem) {
             // move the empty section name to the front of the section list
             if (is != oSections.begin()) {
-                oSections.splice(oSections.begin(), oSections, is, std::next(is));
+                typename TNamesDepend::iterator itNext = is; ++itNext; oSections.splice(oSections.begin(), oSections, is, itNext);
             }
             break;
         }
