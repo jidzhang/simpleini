@@ -32,10 +32,13 @@ jobs:
 
       - name: Install requirements
         run: |
-          sudo apt install libgtest-dev cmake clang
+          sudo apt install libgtest-dev cmake clang g++
 
-      - name: Lightweight test with Clang (C++03)
-        run: bash run_tests_clang.sh
+      - name: Lightweight test with GCC
+        run: CXX=g++ bash run_tests_unix.sh
+
+      - name: Lightweight test with Clang
+        run: CXX=clang++ bash run_tests_unix.sh
 
       - name: Test with CMake (-DSIMPLEINI_USE_SYSTEM_GTEST=OFF)
         run: |
@@ -60,8 +63,8 @@ jobs:
           brew list googletest &>/dev/null || brew install googletest
           brew list cmake &>/dev/null || brew install cmake
 
-      - name: Lightweight test with Clang (C++03)
-        run: bash run_tests_clang.sh
+      - name: Lightweight test with Clang
+        run: CXX=clang++ bash run_tests_unix.sh
 
       - name: Test with CMake (-DSIMPLEINI_USE_SYSTEM_GTEST=OFF)
         run: |
