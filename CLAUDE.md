@@ -48,11 +48,12 @@ python run_tests.py
 ```
 Tests VS2005 x86/x64, VS2019 x86/x64, MinGW-4, MinGW-12, and GoogleTest. Each compiler environment is fully isolated via `vcvarsall.bat` capture.
 
-### Clang test suite (macOS/Linux)
+### GCC/Clang test suite (macOS/Linux)
 ```bash
-bash run_tests_clang.sh
+CXX=g++ bash run_tests_unix.sh
+CXX=clang++ bash run_tests_unix.sh
 ```
-Tests Clang in C++03 and C++17 modes. Runs automatically in CI on macOS and Ubuntu.
+Tests the specified compiler in C++03 and C++17 modes. Runs automatically in CI on Ubuntu (GCC + Clang) and macOS (Clang).
 
 ### Single compiler quick test
 ```bash
@@ -66,6 +67,6 @@ gcc -x c++ -Wall -O2 -I. test_lightweight/test_runner.cpp ConvertUTF.c -o test.e
 | `SimpleIni.h` | Entire library |
 | `ConvertUTF.c` / `.h` | Unicode conversion (only with `SI_CONVERT_GENERIC`) |
 | `run_tests.py` | Cross-compiler test runner (Windows) |
-| `run_tests_clang.sh` | Clang test runner (macOS/Linux) |
+| `run_tests_unix.sh` | GCC/Clang test runner (macOS/Linux) |
 | `test_lightweight/` | C++03-compatible tests (no dependencies) |
 | `tests/` | GoogleTest suite (C++17) |

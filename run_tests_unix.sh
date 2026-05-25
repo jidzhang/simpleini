@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# Clang automated testing for macOS/Linux
-# Usage: ./run_tests_clang.sh
+# GCC/Clang automated testing for macOS/Linux
+# Usage: CXX=g++   ./run_tests_unix.sh
+#        CXX=clang++ ./run_tests_unix.sh
 #
-# Tests the lightweight C++03-compatible test suite with clang++.
+# Tests the lightweight C++03-compatible test suite.
 # Follows the same pattern as run_tests.py (Windows VS/MinGW tests).
 
 set -u
+
+CXX="${CXX:-g++}"
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 PASS=0
@@ -25,19 +28,19 @@ test_lightweight() {
 
     print_header "$label"
 
-    if ! command -v clang++ &>/dev/null; then
-        echo "SKIP: clang++ not found"
-        RESULTS+=("$label|skip|clang++ not found")
+    if ! command -v "$CXX" &>/dev/null; then
+        echo "SKIP: $CXX not found"
+        RESULTS+=("$label|skip|$CXX not found")
         ((SKIP++)) || true
         return
     fi
 
-    local out_exe="$REPO_DIR/test_lightweight/test_clang_$$"
+    local out_exe="$REPO_DIR/test_lightweight/test_unix_$$"
 
-    echo "Compiling: clang++ -x c++ -Wall -O2 $extra_flags"
+    echo "Compiling: $CXX -x c++ -Wall -O2 $extra_flags"
     echo
 
-    if ! clang++ -x c++ -Wall -O2 -I"$REPO_DIR" \
+    if ! "$CXX" -x c++ -Wall -O2 -I"$REPO_DIR" \
          $extra_flags \
          "$REPO_DIR/test_lightweight/test_runner.cpp" \
          "$REPO_DIR/ConvertUTF.c" \
@@ -62,18 +65,20 @@ test_lightweight() {
     rm -f "$out_exe"
 }
 
+# Detect compiler name for display
+cxx_name=$("$CXX" --version 2>/dev/null | head -1 || echo "not found")
+cxx_base=$(basename "$CXX")
+
 # Main
 echo
-echo "SimpleIni Clang Test Suite"
+echo "SimpleIni $cxx_base Test Suite"
 echo "============================================================"
 echo
-
-clang_ver=$(clang++ --version 2>/dev/null | head -1 || echo "not found")
-echo "Compiler: $clang_ver"
+echo "Compiler: $cxx_name"
 echo
 
-test_lightweight "Clang (C++03)" ""
-test_lightweight "Clang (C++17)" "-std=c++17"
+test_lightweight "$cxx_base (C++03)" ""
+test_lightweight "$cxx_base (C++17)" "-std=c++17"
 
 # Summary
 echo
