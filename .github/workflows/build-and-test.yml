@@ -9,7 +9,7 @@ on:
     types: [published]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   Windows:
@@ -80,23 +80,3 @@ jobs:
           cmake -S . -B build-system-gtest -DSIMPLEINI_USE_SYSTEM_GTEST=ON
           cmake --build build-system-gtest
           ctest --verbose --test-dir build-system-gtest
-
-  Doxygen:
-    needs: [Ubuntu, Windows, MacOS]
-    if: ${{ always() && github.event_name != 'pull_request' }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v5
-
-      - name: Install Doxygen
-        run: sudo apt-get update && sudo apt-get install -y doxygen graphviz
-
-      - name: Generate Documentation
-        run: doxygen Doxyfile
-
-      - name: Deploy Documentation to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./docs/html
