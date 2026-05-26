@@ -4,7 +4,7 @@ import sys
 import time
 import shutil
 
-REPO_DIR = r'D:\work\aicode\ini-parse\simpleini'
+REPO_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def run_cmd(cmd, cwd=None, env=None):
     """Run a command and return (returncode, stdout, stderr)."""
@@ -68,6 +68,38 @@ def get_vs_env(vcvars_path, arch):
             key, _, value = line.partition('=')
             env[key] = value
     return env
+
+def _vs_paths_from_comntools(comntools_var):
+    """Derive VS install paths from VSxxCOMNTOOLS environment variable.
+
+    Returns dict with keys: vcvars, vs_base, ide_dir, or empty dict if not set.
+    """
+    comntools = os.environ.get(comntools_var)
+    if not comntools:
+        return {}
+    comntools = comntools.rstrip('\\')
+    vs_base = os.path.normpath(os.path.join(comntools, '..', '..'))
+    ide_dir = os.path.normpath(os.path.join(comntools, '..', 'IDE'))
+    vcvars = os.path.join(vs_base, 'VC', 'vcvarsall.bat')
+    return {'vcvars': vcvars, 'vs_base': vs_base, 'ide_dir': ide_dir}
+
+def _vs_paths_from_vswhere():
+    """Find VS2017+ install path via vswhere.exe.
+
+    Returns dict with key: vcvars, or empty dict if not found.
+    """
+    vswhere = os.path.join(
+        os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)'),
+        'Microsoft Visual Studio', 'Installer', 'vswhere.exe')
+    if not os.path.exists(vswhere):
+        return {}
+    rc, out, _ = run_cmd(
+        [vswhere, '-latest', '-property', 'installationPath', '-version', '[16,18)'])
+    if rc != 0 or not out.strip():
+        return {}
+    install_path = out.strip().splitlines()[0]
+    vcvars = os.path.join(install_path, 'VC', 'Auxiliary', 'Build', 'vcvarsall.bat')
+    return {'vcvars': vcvars}
 
 def rmtree_retry(path, retries=3, delay=1):
     """Remove a directory tree with retries for locked files on Windows."""
@@ -158,31 +190,52 @@ def _test_msvc(label, vcvars_path, arch, extra_flags, fallback_cl,
     return True, "ok"
 
 def test_vs2005_x86():
+    vs = _vs_paths_from_comntools('VS80COMNTOOLS')
+    if not vs:
+        print("=" * 60)
+        print("[VS2005 x86]")
+        print("=" * 60)
+        print("SKIP: VS80COMNTOOLS not set")
+        return False, "not found"
     return _test_msvc(
         "VS2005 x86",
-        vcvars_path=r'C:\Program Files (x86)\Microsoft Visual Studio 8\VC\vcvarsall.bat',
+        vcvars_path=vs['vcvars'],
         arch='x86',
         extra_flags=[],
-        fallback_cl=r'C:\Program Files (x86)\Microsoft Visual Studio 8\VC\bin\cl.exe',
-        ide_dir=r'C:\Program Files (x86)\Microsoft Visual Studio 8\Common7\IDE',
+        fallback_cl=os.path.join(vs['vs_base'], 'VC', 'bin', 'cl.exe'),
+        ide_dir=vs['ide_dir'],
         out_suffix='vs2005_x86',
     )
 
 def test_vs2005_x64():
+    vs = _vs_paths_from_comntools('VS80COMNTOOLS')
+    if not vs:
+        print("=" * 60)
+        print("[VS2005 x64]")
+        print("=" * 60)
+        print("SKIP: VS80COMNTOOLS not set")
+        return False, "not found"
     return _test_msvc(
         "VS2005 x64",
-        vcvars_path=r'C:\Program Files (x86)\Microsoft Visual Studio 8\VC\vcvarsall.bat',
+        vcvars_path=vs['vcvars'],
         arch='amd64',
         extra_flags=[],
-        fallback_cl=r'C:\Program Files (x86)\Microsoft Visual Studio 8\VC\bin\amd64\cl.exe',
-        ide_dir=r'C:\Program Files (x86)\Microsoft Visual Studio 8\Common7\IDE',
+        fallback_cl=os.path.join(vs['vs_base'], 'VC', 'bin', 'amd64', 'cl.exe'),
+        ide_dir=vs['ide_dir'],
         out_suffix='vs2005_x64',
     )
 
 def test_vs2019_x86():
+    vs = _vs_paths_from_vswhere()
+    if not vs:
+        print("=" * 60)
+        print("[VS2019 x86]")
+        print("=" * 60)
+        print("SKIP: vswhere.exe not found or no VS2019+ installation")
+        return False, "not found"
     return _test_msvc(
         "VS2019 x86",
-        vcvars_path=r'C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvarsall.bat',
+        vcvars_path=vs['vcvars'],
         arch='x86',
         extra_flags=['/std:c++17'],
         fallback_cl=None,
@@ -190,9 +243,16 @@ def test_vs2019_x86():
     )
 
 def test_vs2019_x64():
+    vs = _vs_paths_from_vswhere()
+    if not vs:
+        print("=" * 60)
+        print("[VS2019 x64]")
+        print("=" * 60)
+        print("SKIP: vswhere.exe not found or no VS2019+ installation")
+        return False, "not found"
     return _test_msvc(
         "VS2019 x64",
-        vcvars_path=r'C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvarsall.bat',
+        vcvars_path=vs['vcvars'],
         arch='x64',
         extra_flags=['/std:c++17'],
         fallback_cl=None,
@@ -214,11 +274,14 @@ def _test_mingw(label, gcc_path, out_suffix, gcc_from_path=False):
         if not gcc:
             print("SKIP: gcc.exe not found in PATH")
             return False, "not found"
-    else:
+    elif gcc_path:
         gcc = gcc_path
         if not os.path.exists(gcc):
             print(f"SKIP: {label} not found at {gcc_path}")
             return False, "not found"
+    else:
+        print(f"SKIP: {label} path not configured")
+        return False, "not found"
 
     print(f"Using: {gcc}")
 
@@ -258,9 +321,11 @@ def _test_mingw(label, gcc_path, out_suffix, gcc_from_path=False):
     return True, "ok"
 
 def test_mingw4():
+    mingw4_home = os.environ.get('MINGW4_HOME')
+    gcc = os.path.join(mingw4_home, 'bin', 'gcc.exe') if mingw4_home else None
     return _test_mingw(
         "MinGW-4 GCC",
-        gcc_path=r'D:\dev\MinGW-4\bin\gcc.exe',
+        gcc_path=gcc,
         out_suffix='mingw4',
     )
 
