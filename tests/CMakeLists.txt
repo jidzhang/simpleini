@@ -41,9 +41,11 @@ set(TEST_SOURCES
 	${CMAKE_SOURCE_DIR}/ConvertUTF.c
 )
 
-# ts-wchar.cpp uses wchar_t which is primarily for Windows
+# ts-wchar.cpp and ts-wcharpath.cpp use wchar_t file APIs (_wfopen/_wremove)
+# which are primarily for Windows. ts-wcharpath.cpp additionally relies on
+# Chinese characters in the *file path*, validated end-to-end via _wfopen.
 if(WIN32)
-	list(APPEND TEST_SOURCES ts-wchar.cpp)
+	list(APPEND TEST_SOURCES ts-wchar.cpp ts-wcharpath.cpp)
 endif()
 
 add_executable(tests ${TEST_SOURCES})
