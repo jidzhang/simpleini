@@ -52,6 +52,49 @@ Simply include `SimpleIni.h` in your source files:
 
 That's it! The library is ready to use.
 
+# Character Encoding
+
+SimpleIni stores all data internally as `char` bytes. Two storage encodings are supported, selected at runtime via `SetUnicode()`:
+
+| Mode | API call | Bytes on disk | Behaviour |
+|---|---|---|---|
+| **UTF-8** (recommended) | `ini.SetUnicode(true)` | UTF-8 | Locale-independent, fully portable, supports the entire Unicode range (CJK, emoji, combining marks, etc.) |
+| **MBCS** (legacy)      | *(default, no call needed)* | Current system code page | Works on Windows when the file's encoding matches the OS locale (e.g. GBK on zh-CN, Shift-JIS on ja-JP); **not portable across locales or platforms** |
+
+A leading UTF-8 BOM in the input is auto-detected: it is consumed and forces UTF-8 mode on.
+
+## Recommended usage for non-ASCII content (CJK, etc.)
+
+```c++
+CSimpleIniA ini;
+ini.SetUnicode(true);          // store as UTF-8
+ini.LoadFile("config.ini");   // file must be saved as UTF-8
+```
+
+This combination is locale-independent and behaves identically on Windows, Linux, and macOS. Section names, keys, and values may contain any Unicode text (Chinese, Japanese, Korean, emoji, rare CJK extensions, ...). Round-trip is byte-exact via the built-in strict UTF-8 codec.
+
+## When MBCS mode is acceptable
+
+- Native Win32 applications where the configuration file is produced and consumed on a single machine whose system locale matches the file's encoding (e.g. a GBK file on a Simplified Chinese Windows).
+- Backward compatibility with legacy `.ini` files.
+
+Avoid MBCS mode on Linux/macOS (it relies on `setlocale`) and never mix encodings across machines.
+
+## Strict UTF-8 validation
+
+In UTF-8 mode, malformed byte sequences (overlong encodings, lone continuation bytes, UTF-16 surrogates encoded as UTF-8, etc.) cause `LoadData` / `LoadFile` to return `SI_FAIL` instead of silently substituting `U+FFFD`. This surfaces data problems early. If you need lenient handling of legacy byte streams, save the file as proper UTF-8 first.
+
+## wchar_t interface (`CSimpleIniW`)
+
+`CSimpleIniW` exposes the same data through `wchar_t`. Conversion between on-disk `char` and in-memory `wchar_t` is performed by a converter selected at compile time:
+
+- `SI_CONVERT_WIN32` (Windows default) — uses Win32 `MultiByteToWideChar`, locale-independent, Windows-only.
+- `SI_CONVERT_GENERIC` — built-in locale-independent UTF-8 codec in `SimpleIni.h`; portable across all platforms; no extra source files to link.
+- `SI_CONVERT_ICU` — uses IBM ICU; requires ICU headers and `icuuc`.
+- `SI_NO_CONVERSION` (Linux/macOS default) — disables the wide interface entirely.
+
+For portable `CSimpleIniW` usage, pair it with `SetUnicode(true)` and `SI_CONVERT_GENERIC`.
+
 # Build and Test
 
 While the library itself doesn't require building, you can build and run the test suite using CMake.
