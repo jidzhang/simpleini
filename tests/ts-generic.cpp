@@ -136,3 +136,35 @@ TEST_F(TestGenericWide, TestSectionUKeyUValU) {
 	ASSERT_STREQ(result, tesutoni);
 }
 #endif // _WIN32
+
+// Regression: Converter copy dropped m_bStoreIsUtf8, silently routing CJK
+// through the MBCS path instead of UTF-8.
+TEST(TestConverterCopy, CopyConstructedConverterPreservesUtf8Mode) {
+	CSimpleIniW ini;
+	ini.SetUnicode();
+
+	CSimpleIniW::Converter original = ini.GetConverter();
+	CSimpleIniW::Converter copied(original);
+
+	const wchar_t src[] = L"\u30C6";   // KATAKANA LETTER TE = テ
+	ASSERT_TRUE(copied.ConvertToStore(src));
+
+	const char expected[] = { (char)0xE3, (char)0x83, (char)0x86, 0 };
+	ASSERT_STREQ(copied.Data(), expected);
+}
+
+TEST(TestConverterCopy, AssignedConverterPreservesUtf8Mode) {
+	CSimpleIniW ini;
+	ini.SetUnicode();
+
+	CSimpleIniW::Converter original = ini.GetConverter();
+
+	// Target starts in MBCS mode; assignment must flip m_bStoreIsUtf8 to true.
+	CSimpleIniW::Converter target(false);
+	target = original;
+
+	const wchar_t src[] = L"\u30C6";   // テ -> E3 83 86
+	ASSERT_TRUE(target.ConvertToStore(src));
+	const char expected[] = { (char)0xE3, (char)0x83, (char)0x86, 0 };
+	ASSERT_STREQ(target.Data(), expected);
+}

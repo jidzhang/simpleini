@@ -328,3 +328,38 @@ TEST_F(TestDeletion, TestDeleteValueExactMatch) {
 	ASSERT_TRUE(found_123value);
 	ASSERT_FALSE(found_value);
 }
+
+// Regression: Delete/DeleteValue used to leak the per-entry comment string.
+TEST_F(TestDeletion, TestDeleteValueDoesNotLeakComment) {
+	ini.SetMultiKey(false);
+	ASSERT_EQ(ini.SetValue("s", "k", "v1", "; comment1"), SI_INSERTED);
+	ASSERT_EQ(ini.SetValue("s", "k", "v2", "; comment2"), SI_UPDATED);
+	ASSERT_EQ(ini.SetValue("s", "k", "v3", "; comment3"), SI_UPDATED);
+
+	ASSERT_TRUE(ini.Delete("s", "k"));
+
+	ASSERT_EQ(ini.SetValue("s", "k", "vfinal", "; final comment"), SI_INSERTED);
+
+	std::string output;
+	ASSERT_EQ(ini.Save(output), SI_OK);
+	ASSERT_NE(output.find("; final comment"), std::string::npos);
+	ASSERT_NE(output.find("vfinal"), std::string::npos);
+	ASSERT_EQ(output.find("comment1"), std::string::npos);
+	ASSERT_EQ(output.find("comment2"), std::string::npos);
+	ASSERT_EQ(output.find("comment3"), std::string::npos);
+}
+
+TEST_F(TestDeletion, TestDeleteSectionDoesNotLeakComment) {
+	ASSERT_EQ(ini.SetValue("s1", "k1", "v1", "; key comment"), SI_INSERTED);
+	ASSERT_EQ(ini.SetValue("s1", "k2", "v2", "; another comment"), SI_INSERTED);
+
+	ASSERT_TRUE(ini.Delete("s1", nullptr, true));
+
+	ASSERT_FALSE(ini.SectionExists("s1"));
+}
+
+TEST_F(TestDeletion, TestDeleteSectionOnlyKeyDoesNotLeakComment) {
+	ASSERT_EQ(ini.SetValue("solo", "k", "v", "; only comment"), SI_INSERTED);
+	ASSERT_TRUE(ini.Delete("solo", "k", true));
+	ASSERT_FALSE(ini.SectionExists("solo"));
+}

@@ -457,8 +457,15 @@ public:
         Converter(bool a_bStoreIsUtf8) : SI_CONVERTER(a_bStoreIsUtf8) {
             m_scratch.resize(1024);
         }
-        Converter(const Converter & rhs) { operator=(rhs); }
+        Converter(const Converter & rhs)
+            : SI_CONVERTER(rhs)
+        {
+            m_scratch = rhs.m_scratch;
+        }
+        // Forward to the base so m_bStoreIsUtf8 (and any converter-specific
+        // state) survives assignment — otherwise copies silently drop UTF-8 mode.
         Converter & operator=(const Converter & rhs) {
+            SI_CONVERTER::operator=(rhs);
             m_scratch = rhs.m_scratch;
             return *this;
         }
@@ -2842,6 +2849,7 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::DeleteValue(
             (isLess(a_pValue, iDelete->second) == false &&
             isLess(iDelete->second, a_pValue) == false)) {
                 DeleteString(iDelete->first.pItem);
+                DeleteString(iDelete->first.pComment);
                 DeleteString(iDelete->second);
                 iSection->second.erase(iDelete);
                 bDeleted = true;
@@ -2867,12 +2875,14 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::DeleteValue(
         typename TKeyVal::iterator iKeyVal = iSection->second.begin();
         for ( ; iKeyVal != iSection->second.end(); ++iKeyVal) {
             DeleteString(iKeyVal->first.pItem);
+            DeleteString(iKeyVal->first.pComment);
             DeleteString(iKeyVal->second);
         }
     }
 
     // delete the section itself
     DeleteString(iSection->first.pItem);
+    DeleteString(iSection->first.pComment);
     m_data.erase(iSection);
 
     return true;
@@ -2884,6 +2894,7 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::DeleteString(
     const SI_CHAR * a_pString
     )
 {
+    if (!a_pString) return;
     // strings may exist either inside the data block, or they will be
     // individually allocated and stored in m_strings. We only physically
     // delete those stored in m_strings.
