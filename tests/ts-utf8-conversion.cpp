@@ -202,11 +202,11 @@ bool DecodeUtf8Sequence(const std::string & a_utf8, std::vector<char32_t> & a_cp
     const char * end = a_utf8.data() + a_utf8.size();
     a_cps.clear();
     while (src < end) {
-        char32_t cp = 0;
+        SI_UTF8::CodePoint cp = 0;
         if (!SI_UTF8::Decode(src, end, cp)) {
             return false;
         }
-        a_cps.push_back(cp);
+        a_cps.push_back((char32_t) cp);
     }
     return true;
 }
@@ -291,7 +291,7 @@ TEST(Utf8Conversion, EncodeAndDecodeMatchSystemLibraryForAllAssignedScalars)
         ASSERT_EQ(memcmp(sysBuf, ourBuf, sysLen), 0) << std::hex << cp;
 
         char32_t sysCp = 0;
-        char32_t ourCp = 0;
+        SI_UTF8::CodePoint ourCp = 0;
         size_t sysConsumed = 0;
         ASSERT_TRUE(SystemDecode(sysBuf, sysLen, sysCp, sysConsumed)) << std::hex << cp;
         ASSERT_EQ(sysConsumed, (size_t) sysLen) << std::hex << cp;
@@ -301,12 +301,12 @@ TEST(Utf8Conversion, EncodeAndDecodeMatchSystemLibraryForAllAssignedScalars)
         ASSERT_EQ((size_t) (ourSrc - ourBuf), (size_t) ourLen) << std::hex << cp;
 
         ASSERT_EQ(sysCp, cp) << std::hex << cp;
-        ASSERT_EQ(ourCp, cp) << std::hex << cp;
+        ASSERT_EQ((char32_t) ourCp, cp) << std::hex << cp;
 
         const char * roundSrc = sysBuf;
-        char32_t roundCp = 0;
+        SI_UTF8::CodePoint roundCp = 0;
         ASSERT_TRUE(SI_UTF8::Decode(roundSrc, sysBuf + sysLen, roundCp)) << std::hex << cp;
-        ASSERT_EQ(roundCp, cp) << std::hex << cp;
+        ASSERT_EQ((char32_t) roundCp, cp) << std::hex << cp;
     }
 }
 
@@ -320,7 +320,7 @@ TEST(Utf8Conversion, OutOfRangeScalar_EncodesReplacement)
     ASSERT_EQ((unsigned char) buf[2], 0xBD);
 
     const char * src = buf;
-    char32_t cp = 0;
+    SI_UTF8::CodePoint cp = 0;
     ASSERT_TRUE(SI_UTF8::Decode(src, buf + n, cp));
     ASSERT_EQ(cp, SI_UTF8::REPLACEMENT);
 }
@@ -335,7 +335,7 @@ TEST(Utf8Conversion, SurrogateScalar_EncodesReplacement)
     ASSERT_EQ((unsigned char) buf[2], 0xBD);
 
     const char * src = buf;
-    char32_t cp = 0;
+    SI_UTF8::CodePoint cp = 0;
     ASSERT_TRUE(SI_UTF8::Decode(src, buf + n, cp));
     ASSERT_EQ(cp, SI_UTF8::REPLACEMENT);
 }
