@@ -167,10 +167,9 @@ def _test_msvc(label, vcvars_path, arch, extra_flags, fallback_cl,
     if os.path.exists(out_exe):
         os.remove(out_exe)
 
-    convertutf = os.path.join(REPO_DIR, 'ConvertUTF.c')
     runner = os.path.join(test_dir, 'test_runner.cpp')
     cmd = [cl, '/nologo', '/W3', '/EHsc', '/O2'] + extra_flags + \
-          ['/I' + REPO_DIR, runner, convertutf, '/Fe' + out_exe]
+          ['/I' + REPO_DIR, runner, '/Fe' + out_exe]
     rc, out, err = run_cmd(cmd, env=env)
     if rc != 0:
         print(f"FAIL: Compile error (code {rc})")
@@ -291,9 +290,8 @@ def _test_mingw(label, gcc_path, out_suffix, gcc_from_path=False):
     if os.path.exists(out_exe):
         os.remove(out_exe)
 
-    convertutf = os.path.join(REPO_DIR, 'ConvertUTF.c')
     cmd = [gcc, '-x', 'c++', '-Wall', '-O2', '-I' + REPO_DIR,
-           os.path.join(test_dir, 'test_runner.cpp'), convertutf,
+           os.path.join(test_dir, 'test_runner.cpp'),
            '-o', out_exe, '-lstdc++']
     rc, out, err = run_cmd(cmd)
     if rc != 0:

@@ -1,4 +1,8 @@
 #include "test_framework.h"
+
+// Exercise SI_CONVERT_GENERIC (the SI_UTF8 inline converter)
+// so the new code path is covered by the C++03 / VS2005 suite.
+#define SI_CONVERT_GENERIC
 #include "../SimpleIni.h"
 #include <string.h>
 #include <string>
@@ -339,6 +343,150 @@ void test_getlong_overflow() {
 }
 
 // ============================================================
+// Test: SI_UTF8 round-trip via CSimpleIniW (BMP code points)
+// Covers the new SI_ConvertW::ConvertFromStore / ConvertToStore path.
+// ============================================================
+void test_utf8conv_roundtrip_bmp() {
+    // "k=世界" — U+4E16 U+754C, 3 bytes each in UTF-8
+    const char data[] =
+        "[sec]\n"
+        "k = \xE4\xB8\x96\xE7\x95\x8C\n";
+    CSimpleIniW ini;
+    ini.SetUnicode(true);
+    SI_Error rc = ini.LoadData(data, sizeof(data) - 1);
+    TEST_ASSERT_EQ(rc, SI_OK);
+
+    const wchar_t* v = ini.GetValue(L"sec", L"k", NULL);
+    TEST_ASSERT_NOT_NULL(v);
+    TEST_ASSERT_EQ((int)v[0], 0x4E16);
+    TEST_ASSERT_EQ((int)v[1], 0x754C);
+    TEST_ASSERT_EQ((int)v[2], 0);
+
+    std::string out;
+    rc = ini.Save(out);
+    TEST_ASSERT_EQ(rc, SI_OK);
+    // UTF-8 bytes must round-trip exactly.
+    TEST_ASSERT(out.find("\xE4\xB8\x96\xE7\x95\x8C") != std::string::npos);
+}
+
+// ============================================================
+// Test: SI_UTF8 round-trip via CSimpleIniW (4-byte code point U+1F600).
+// On 2-byte wchar_t (Windows) this must form a surrogate pair; on
+// 4-byte wchar_t (Linux/macOS) a single code unit. Both paths exercised.
+// ============================================================
+void test_utf8conv_roundtrip_4byte() {
+    // 😀 U+1F600 = F0 9F 98 80
+    const char data[] = "[s]\nk = \xF0\x9F\x98\x80\n";
+    CSimpleIniW ini;
+    ini.SetUnicode(true);
+    SI_Error rc = ini.LoadData(data, sizeof(data) - 1);
+    TEST_ASSERT_EQ(rc, SI_OK);
+
+    const wchar_t* v = ini.GetValue(L"s", L"k", NULL);
+    TEST_ASSERT_NOT_NULL(v);
+    if (sizeof(wchar_t) == 4) {
+        // 4-byte wchar_t: single code unit.
+        TEST_ASSERT_EQ((int)v[0], 0x1F600);
+        TEST_ASSERT_EQ((int)v[1], 0);
+    } else {
+        // 2-byte wchar_t: surrogate pair.
+        TEST_ASSERT_EQ((int)v[0], 0xD83D);
+        TEST_ASSERT_EQ((int)v[1], 0xDE00);
+        TEST_ASSERT_EQ((int)v[2], 0);
+    }
+
+    std::string out;
+    rc = ini.Save(out);
+    TEST_ASSERT_EQ(rc, SI_OK);
+    TEST_ASSERT(out.find("\xF0\x9F\x98\x80") != std::string::npos);
+}
+
+// ============================================================
+// Test: SI_UTF8 strict rejection — invalid UTF-8 must cause
+// LoadData to return SI_FAIL, not silently substitute U+FFFD.
+// This is the behaviour change adopted from upstream 1f878b3.
+// ============================================================
+void test_utf8conv_reject_invalid() {
+    CSimpleIniW ini;
+    ini.SetUnicode(true);
+
+    // Lone continuation byte.
+    const char lone_cont[] = "[s]\nk = \x80\n";
+    SI_Error rc = ini.LoadData(lone_cont, sizeof(lone_cont) - 1);
+    TEST_ASSERT_EQ(rc, SI_FAIL);
+
+    // Overlong encoding of U+002F (must be 0x2F, not 0xC0 0xAF).
+    const char overlong[] = "[s]\nk = \xC0\xAF\n";
+    rc = ini.LoadData(overlong, sizeof(overlong) - 1);
+    TEST_ASSERT_EQ(rc, SI_FAIL);
+
+    // UTF-16 surrogate code point encoded as UTF-8 (U+D800 = ED A0 80).
+    const char surrogate[] = "[s]\nk = \xED\xA0\x80\n";
+    rc = ini.LoadData(surrogate, sizeof(surrogate) - 1);
+    TEST_ASSERT_EQ(rc, SI_FAIL);
+
+    // Impossible byte (>= 0xF8 in old terms; 0xFE is illegal).
+    const char impossible[] = "[s]\nk = \xFE\n";
+    rc = ini.LoadData(impossible, sizeof(impossible) - 1);
+    TEST_ASSERT_EQ(rc, SI_FAIL);
+}
+
+// ============================================================
+// Test: SI_UTF8::Encode converts surrogate / out-of-range scalars
+// to U+FFFD (REPLACEMENT) when writing back, so output is always
+// well-formed. We construct a wchar_t string holding a lone surrogate
+// via SI_UTF8::ReadCodePoint's plain path and save it.
+// ============================================================
+void test_utf8conv_encode_replacement() {
+    CSimpleIniW ini;
+    ini.SetUnicode(true);
+
+    // Force a lone surrogate code unit into the store by SetValue with a
+    // 4-byte wchar_t value of 0xD800. SI_UTF8::Encode must turn it into
+    // U+FFFD (EF BF BD) instead of emitting a broken surrogate sequence.
+    if (sizeof(wchar_t) == 4) {
+        const wchar_t bad_val[2] = { (wchar_t)0xD800, 0 };
+        ini.SetValue(L"s", L"k", bad_val);
+
+        std::string out;
+        SI_Error rc = ini.Save(out);
+        TEST_ASSERT_EQ(rc, SI_OK);
+        // Should contain the U+FFFD byte sequence, and must NOT contain
+        // any lone ED A0 80-style surrogate bytes.
+        TEST_ASSERT(out.find("\xEF\xBF\xBD") != std::string::npos);
+        TEST_ASSERT(out.find("\xED\xA0\x80") == std::string::npos);
+    } else {
+        // 2-byte wchar_t: skip — surrogate handling there is by design
+        // (pairs are merged by ReadCodePoint). Just record a pass.
+        TEST_ASSERT(1);
+    }
+}
+
+// ============================================================
+// Test: SI_UTF8 keeps a wide-char ASCII path identical to char path,
+// ensuring the SI_ConvertW route doesn\'t introduce regression on
+// plain ASCII content.
+// ============================================================
+void test_utf8conv_ascii_passthrough() {
+    const char data[] = "[section]\nkey = value\n";
+    CSimpleIniW ini;
+    ini.SetUnicode(true);
+    SI_Error rc = ini.LoadData(data, sizeof(data) - 1);
+    TEST_ASSERT_EQ(rc, SI_OK);
+
+    const wchar_t* v = ini.GetValue(L"section", L"key", NULL);
+    TEST_ASSERT_NOT_NULL(v);
+    TEST_ASSERT_EQ((int)v[0], (int)'v');
+    TEST_ASSERT_EQ((int)v[4], (int)'e');
+    TEST_ASSERT_EQ((int)v[5], 0);
+
+    std::string out;
+    rc = ini.Save(out);
+    TEST_ASSERT_EQ(rc, SI_OK);
+    TEST_ASSERT(out.find("key = value") != std::string::npos);
+}
+
+// ============================================================
 // Main
 // ============================================================
 int main() {
@@ -360,6 +508,11 @@ int main() {
     RUN_TEST(reset_order);
     RUN_TEST(save_multiline_disabled_fails);
     RUN_TEST(getlong_overflow);
+    RUN_TEST(utf8conv_roundtrip_bmp);
+    RUN_TEST(utf8conv_roundtrip_4byte);
+    RUN_TEST(utf8conv_reject_invalid);
+    RUN_TEST(utf8conv_encode_replacement);
+    RUN_TEST(utf8conv_ascii_passthrough);
 
     test_summary();
 

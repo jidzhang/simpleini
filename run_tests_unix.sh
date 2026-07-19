@@ -43,7 +43,6 @@ test_lightweight() {
     if ! "$CXX" -x c++ -Wall -O2 -I"$REPO_DIR" \
          $extra_flags \
          "$REPO_DIR/test_lightweight/test_runner.cpp" \
-         "$REPO_DIR/ConvertUTF.c" \
          -o "$out_exe" -lstdc++ 2>&1; then
         echo "FAIL: Compile error"
         RESULTS+=("$label|fail|compile failed")
