@@ -1,6 +1,6 @@
 # simpleini
 
-![Latest Test Results](https://github.com/brofield/simpleini/actions/workflows/build-and-test.yml/badge.svg)
+![Latest Test Results](https://github.com/jidzhang/simpleini/actions/workflows/build-and-test.yml/badge.svg)
 
 A cross-platform library that provides a simple API to read and write INI-style configuration files.
 It supports data files in ASCII, MBCS and Unicode, and is designed to be portable to any platform.

@@ -57,7 +57,7 @@ Tests the specified compiler in C++03 and C++17 modes. Runs automatically in CI 
 
 ### Single compiler quick test
 ```bash
-gcc -x c++ -Wall -O2 -I. test_lightweight/test_runner.cpp ConvertUTF.c -o test.exe -lstdc++ && ./test.exe
+gcc -x c++ -Wall -O2 -I. test_lightweight/test_runner.cpp -o test.exe -lstdc++ && ./test.exe
 ```
 
 ## Key Files
@@ -65,7 +65,7 @@ gcc -x c++ -Wall -O2 -I. test_lightweight/test_runner.cpp ConvertUTF.c -o test.e
 | File | Role |
 |------|------|
 | `SimpleIni.h` | Entire library |
-| `ConvertUTF.c` / `.h` | Unicode conversion (only with `SI_CONVERT_GENERIC`) |
+| `SI_UTF8` namespace (in `SimpleIni.h`) | Inline locale-independent UTF-8 codec used by `SI_CONVERT_GENERIC`; no extra source files |
 | `run_tests.py` | Cross-compiler test runner (Windows) |
 | `run_tests_unix.sh` | GCC/Clang test runner (macOS/Linux) |
 | `test_lightweight/` | C++03-compatible tests (no dependencies) |
