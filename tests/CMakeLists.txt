@@ -25,6 +25,7 @@ endif()
 
 set(TEST_SOURCES
 	ts-bugfix.cpp
+	ts-iowriter.cpp
 	ts-noconvert.cpp
 	ts-quotes.cpp
 	ts-roundtrip.cpp
