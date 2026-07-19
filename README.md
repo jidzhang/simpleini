@@ -4,6 +4,11 @@
 
 A cross-platform library that provides a simple API to read and write INI-style configuration files. It supports data files in ASCII, MBCS and Unicode. It is designed explicitly to be portable to any platform and has been tested on Windows, WinCE and Linux. Released as open-source and free using the MIT licence.
 
+**This fork of [brofield/simpleini](https://github.com/brofield/simpleini) keeps two guarantees that matter for production deployment:**
+
+- **Single header file.** Drop `SimpleIni.h` into your project and `#include` it. No CMake, no linker setup, no extra source files, no runtime DLL. The only dependency is the C++ standard library.
+- **Visual Studio 2005 compatibility.** The production header is strict C++03 (no `auto`, `constexpr`, `nullptr`, range-for, etc.). This makes it usable on legacy toolchains that are still common in embedded and industrial contexts (VS2005/2008, MinGW), while still compiling cleanly on modern GCC, Clang, and MSVC.
+
 [Full documentation](https://brofield.github.io/simpleini/)
 
 # Feature Summary
@@ -28,6 +33,8 @@ A cross-platform library that provides a simple API to read and write INI-style 
 - support for non-standard character types or file encodings via user-written converter classes
 - support for adding/modifying values programmatically
 - should compile with no warnings in most compilers
+- **single-header, standard-library-only** deployment: no build system or linker setup needed
+- **long-term toolchain support**: the public header targets strict C++03 and is verified against VS2005 (x86/x64), VS2019, MinGW-4, MinGW-12, GCC and Clang
 
 # Documentation
 
