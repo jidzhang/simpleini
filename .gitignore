@@ -375,3 +375,7 @@ test_lightweight/*.log
 test_lightweight/*.obj
 _vs_env_tmp.bat
 %SystemDrive%/
+
+# Vendored third-party sources + user presets (not committed)
+.vendor/
+CMakeUserPresets.json
