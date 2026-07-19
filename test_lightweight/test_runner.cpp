@@ -1,6 +1,7 @@
 #include "test_framework.h"
 #include "../SimpleIni.h"
 #include <string.h>
+#include <string>
 
 // ============================================================
 // Test: Basic load and save
@@ -255,6 +256,89 @@ void test_numeric() {
 }
 
 // ============================================================
+// Test: SetAllowKeyOnly - key-only entries must not inherit the
+// previous key's value (Bug 1 regression).
+// ============================================================
+void test_keyonly_no_inherit() {
+    const char* data =
+        "[s]\n"
+        "key1 = value1\n"
+        "key2\n"            // key-only; must NOT pick up "value1"
+        "key3 = value3\n"
+        "key4\n";           // key-only; must NOT pick up "value3"
+
+    CSimpleIniA ini;
+    ini.SetUnicode();
+    ini.SetAllowKeyOnly(true);
+    SI_Error rc = ini.LoadData(data);
+    TEST_ASSERT_EQ(rc, SI_OK);
+
+    TEST_ASSERT_STR_EQ(ini.GetValue("s", "key1", "?"), "value1");
+    TEST_ASSERT_STR_EQ(ini.GetValue("s", "key3", "?"), "value3");
+
+    const char* v2 = ini.GetValue("s", "key2", NULL);
+    const char* v4 = ini.GetValue("s", "key4", NULL);
+    TEST_ASSERT_NOT_NULL(v2);
+    TEST_ASSERT_NOT_NULL(v4);
+    TEST_ASSERT_STR_EQ(v2, "");
+    TEST_ASSERT_STR_EQ(v4, "");
+}
+
+// ============================================================
+// Test: Reset() must reset the order counter (Bug 6 regression).
+// ============================================================
+void test_reset_order() {
+    CSimpleIniA ini;
+    ini.SetUnicode();
+    for (int i = 0; i < 5; ++i) {
+        ini.SetValue("section", std::string(1, (char)('a' + i)).c_str(), "v");
+    }
+    ini.Reset();
+    TEST_ASSERT_EQ(ini.LoadData("[a]\nx=1\n[b]\ny=2\n[c]\nz=3\n"), SI_OK);
+
+    CSimpleIniA::TNamesDepend secs;
+    ini.GetAllSections(secs);
+    secs.sort(CSimpleIniA::Entry::LoadOrder());
+
+    TEST_ASSERT_EQ((int)secs.size(), 3);
+    // After the fix, the first section's order must be small (proves reset).
+    TEST_ASSERT(secs.front().nOrder <= 2);
+}
+
+// ============================================================
+// Test: Save with embedded newline but SetMultiLine(false) must
+// return SI_FAIL instead of silently corrupting (Bug 2 regression).
+// ============================================================
+void test_save_multiline_disabled_fails() {
+    CSimpleIniA ini;
+    ini.SetUnicode();
+    ini.SetMultiLine(false);
+    ini.SetValue("s", "k", "line1\nline2\nline3");
+
+    std::string out;
+    SI_Error rc = ini.Save(out);
+    TEST_ASSERT_EQ(rc, SI_FAIL);
+}
+
+// ============================================================
+// Test: GetLongValue overflow must return default (Bug 5 regression).
+// ============================================================
+void test_getlong_overflow() {
+    const char* data =
+        "[s]\n"
+        "huge = 99999999999999999999999\n";
+
+    CSimpleIniA ini;
+    ini.SetUnicode();
+    SI_Error rc = ini.LoadData(data);
+    TEST_ASSERT_EQ(rc, SI_OK);
+
+    // Should return default, not LONG_MAX.
+    long v = ini.GetLongValue("s", "huge", 999);
+    TEST_ASSERT_EQ(v, 999);
+}
+
+// ============================================================
 // Main
 // ============================================================
 int main() {
@@ -272,6 +356,10 @@ int main() {
     RUN_TEST(no_section);
     RUN_TEST(empty_value);
     RUN_TEST(numeric);
+    RUN_TEST(keyonly_no_inherit);
+    RUN_TEST(reset_order);
+    RUN_TEST(save_multiline_disabled_fails);
+    RUN_TEST(getlong_overflow);
 
     test_summary();
 

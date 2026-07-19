@@ -314,3 +314,59 @@ TEST_F(TestNumeric, TestNumericRoundtrip) {
 	ASSERT_NEAR(ini2.GetDoubleValue("test", "double1", 0.0), 3.14159, 0.00001);
 	ASSERT_NEAR(ini2.GetDoubleValue("test", "double2", 0.0), -2.71828, 0.00001);
 }
+
+// ============================================================
+// Regression tests for Bug 5: numeric overflow handling
+// ============================================================
+
+// GetLongValue must return the default when the stored value would overflow
+// long. Previously it returned LONG_MAX/LONG_MIN because errno was unchecked.
+TEST_F(TestNumeric, TestGetLongValueOverflow) {
+	std::string input =
+		"[numbers]\n"
+		"huge = 99999999999999999999999\n"
+		"tiny = -99999999999999999999999\n";
+
+	SI_Error rc = ini.LoadData(input);
+	ASSERT_EQ(rc, SI_OK);
+
+	// Both should fall back to default, not clamp to LONG_MAX/LONG_MIN.
+	ASSERT_EQ(ini.GetLongValue("numbers", "huge", 999), 999);
+	ASSERT_EQ(ini.GetLongValue("numbers", "tiny", -999), -999);
+}
+
+// GetLongValue hex path must also detect overflow.
+TEST_F(TestNumeric, TestGetLongValueHexOverflow) {
+	std::string input =
+		"[numbers]\n"
+		"big = 0xFFFFFFFFFFFFFFFFFF\n";
+
+	SI_Error rc = ini.LoadData(input);
+	ASSERT_EQ(rc, SI_OK);
+
+	ASSERT_EQ(ini.GetLongValue("numbers", "big", 42), 42);
+}
+
+// GetDoubleValue must return the default when the stored value would overflow
+// double. Previously it returned +/- HUGE_VAL because errno was unchecked.
+TEST_F(TestNumeric, TestGetDoubleValueOverflow) {
+	std::string input =
+		"[floats]\n"
+		"big = 1e999\n"
+		"tiny = -1e999\n";
+
+	SI_Error rc = ini.LoadData(input);
+	ASSERT_EQ(rc, SI_OK);
+
+	ASSERT_NEAR(ini.GetDoubleValue("floats", "big", 7.5), 7.5, 0.0001);
+	ASSERT_NEAR(ini.GetDoubleValue("floats", "tiny", -7.5), -7.5, 0.0001);
+}
+
+// No regression: in-range values that just touch the limits must still work.
+TEST_F(TestNumeric, TestGetLongValueLimitsUnchanged) {
+	ini.SetLongValue("numbers", "max", LONG_MAX);
+	ini.SetLongValue("numbers", "min", LONG_MIN);
+
+	ASSERT_EQ(ini.GetLongValue("numbers", "max", 0), LONG_MAX);
+	ASSERT_EQ(ini.GetLongValue("numbers", "min", 0), LONG_MIN);
+}

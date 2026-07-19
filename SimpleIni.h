@@ -234,6 +234,7 @@
 
 #include <cstring>
 #include <cstdlib>
+#include <cerrno>
 #include <string>
 #include <map>
 #include <list>
@@ -390,9 +391,12 @@ public:
     */
     class OutputWriter {
     public:
-        OutputWriter() { }
+        OutputWriter() : m_bFail(false) { }
         virtual ~OutputWriter() { }
         virtual void Write(const char * a_pBuf) = 0;
+        bool Fail() const { return m_bFail; }
+    protected:
+        bool m_bFail;
     private:
         OutputWriter(const OutputWriter &);             // disable
         OutputWriter & operator=(const OutputWriter &); // disable
@@ -404,7 +408,9 @@ public:
     public:
         FileWriter(FILE * a_file) : m_file(a_file) { }
         void Write(const char * a_pBuf) {
-            fputs(a_pBuf, m_file);
+            if (fputs(a_pBuf, m_file) == EOF) {
+                this->m_bFail = true;
+            }
         }
     private:
         FileWriter(const FileWriter &);             // disable
@@ -432,6 +438,9 @@ public:
         StreamWriter(std::ostream & a_ostream) : m_ostream(a_ostream) { }
         void Write(const char * a_pBuf) {
             m_ostream << a_pBuf;
+            if (!m_ostream.good()) {
+                this->m_bFail = true;
+            }
         }
     private:
         StreamWriter(const StreamWriter &);             // disable
@@ -1285,6 +1294,7 @@ private:
 
     bool IsMultiLineTag(const SI_CHAR * a_pData) const;
     bool IsMultiLineData(const SI_CHAR * a_pData) const;
+    bool ContainsNewLine(const SI_CHAR * a_pData) const;
     bool IsSingleLineQuotedValue(const SI_CHAR* a_pData) const;
     bool LoadMultiLineText(
         SI_CHAR *&          a_pData,
@@ -1405,6 +1415,7 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::Reset()
         }
         m_strings.erase(m_strings.begin(), m_strings.end());
     }
+    m_nOrder = 0;
 }
 
 template<class SI_CHAR, class SI_STRLESS, class SI_CONVERTER>
@@ -1770,11 +1781,15 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::FindEntry(
             }
         }
         else {
-            // no value to process, just prepare for the next
+            // no value to process, just prepare for the next.
+            // explicitly reset a_pVal; otherwise it keeps the pointer
+            // from a previous FindEntry call and would leak that value
+            // into this key-only entry as a stale value.
             if (*a_pData) { 
                 SkipNewLine(a_pData);
             }
             *pTrail = 0;
+            a_pVal = NULL;
         }
 
         // return the standard entry
@@ -1878,6 +1893,21 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::IsNewLineChar(
     ) const
 {
     return (a_c == '\n' || a_c == '\r');
+}
+
+template<class SI_CHAR, class SI_STRLESS, class SI_CONVERTER>
+bool
+CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::ContainsNewLine(
+    const SI_CHAR * a_pData
+    ) const
+{
+    while (*a_pData) {
+        if (IsNewLineChar(*a_pData)) {
+            return true;
+        }
+        ++a_pData;
+    }
+    return false;
 }
 
 template<class SI_CHAR, class SI_STRLESS, class SI_CONVERTER>
@@ -2213,6 +2243,7 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::GetLongValue(
     // handle the value as hex if prefaced with "0x"
     long nValue = a_nDefault;
     char * pszSuffix = szValue;
+    errno = 0;
     if (szValue[0] == '0' && (szValue[1] == 'x' || szValue[1] == 'X')) {
         if (!szValue[2]) return a_nDefault;
         nValue = strtol(&szValue[2], &pszSuffix, 16);
@@ -2221,8 +2252,8 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::GetLongValue(
         nValue = strtol(szValue, &pszSuffix, 10);
     }
 
-    // any invalid strings will return the default value
-    if (*pszSuffix) { 
+    // any invalid strings or out-of-range values will return the default
+    if (*pszSuffix || errno == ERANGE) { 
         return a_nDefault; 
     }
 
@@ -2282,11 +2313,12 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::GetDoubleValue(
     }
 
     char * pszSuffix = szValue;
+    errno = 0;
     double nValue = strtod(szValue, &pszSuffix);
 
-    // any invalid strings will return the default value
-    // check if no conversion was performed or if there are trailing characters
-    if (pszSuffix == szValue || *pszSuffix) {
+    // any invalid strings or out-of-range values will return the default value
+    // check if no conversion was performed, trailing characters, or ERANGE
+    if (pszSuffix == szValue || *pszSuffix || errno == ERANGE) {
         return a_nDefault;
     }
 
@@ -2706,6 +2738,16 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::Save(
                         }
                         a_oOutput.Write("END_OF_TEXT");
                     }
+                    else if (!m_bAllowMultiLine && ContainsNewLine(iValue->pItem)) {
+                        // The value contains embedded newlines but SetMultiLine(false)
+                        // is in effect, so it cannot be represented in the output
+                        // without silent corruption on reload (the lines after the
+                        // first would be parsed as new key/value entries). Fail loudly
+                        // so the caller can enable SetMultiLine(true) or sanitise the
+                        // value. Whitespace-only edge cases are intentionally not
+                        // covered here to preserve backward compatibility.
+                        return SI_FAIL;
+                    }
                     else {
                         a_oOutput.Write(convert.Data());
                     }
@@ -2717,7 +2759,9 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::Save(
         bNeedNewLine = true;
     }
 
-    return SI_OK;
+    // report any I/O failure observed by the OutputWriter (e.g. disk
+    // full, broken pipe, closed FILE*) instead of silently returning OK.
+    return a_oOutput.Fail() ? SI_FAIL : SI_OK;
 }
 
 template<class SI_CHAR, class SI_STRLESS, class SI_CONVERTER>
