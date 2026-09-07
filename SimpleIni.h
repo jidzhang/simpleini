@@ -110,7 +110,11 @@
     by defining SI_SUPPORT_IOSTREAMS before including the SimpleIni.h header
     file. Ensure that if the streams are backed by a file (e.g. ifstream or
     ofstream) then the flag ios_base::binary has been used when the file was
-    opened.
+    opened so that byte values are not altered by the stream layer.
+
+    LoadData(std::istream&) reads text INI data only. Streams containing a NUL
+    (zero) byte are rejected with SI_FAIL. Streams larger than SI_MAX_FILE_SIZE
+    are rejected with SI_FILE.
 
     @section multiline MULTI-LINE VALUES
 
@@ -129,6 +133,8 @@
       before ENDTAG in the end tag is not included in the data value.
     - The ending tag must be on it's own line with no whitespace before
       or after it.
+    - If the closing ENDTAG is not found, the value includes all lines from
+      the opening tag through the end of the file (lenient parsing).
     - The multi-line value is modified at load so that each line in the value
       is delimited by a single '\\n' character on all platforms. At save time
       it will be converted into the newline format used by the current
@@ -238,6 +244,7 @@
 #include <cerrno>
 #include <string>
 #include <map>
+#include <vector>
 #include <list>
 #include <algorithm>
 #include <stdio.h>
@@ -266,9 +273,13 @@ const int SI_FAIL = -1;     //!< Generic failure
 const int SI_NOMEM = -2;    //!< Out of memory error
 const int SI_FILE = -3;     //!< File error (see errno for detail error)
 
-//! Maximum supported file size (1 GiB). Files larger than this will be rejected
-//! to prevent excessive memory allocation and potential denial of service.
-const size_t SI_MAX_FILE_SIZE = 1024ULL * 1024ULL * 1024ULL;
+//! Maximum supported file size (1 GiB). Files and strings larger than this
+//! will be rejected to prevent excessive memory allocation and potential
+//! denial of service. Define SI_MAX_FILE_SIZE before including this header
+//! to override it.
+#ifndef SI_MAX_FILE_SIZE
+# define SI_MAX_FILE_SIZE (1024ULL * 1024ULL * 1024ULL)
+#endif
 
 #define SI_UTF8_SIGNATURE     "\xEF\xBB\xBF"
 
@@ -482,6 +493,8 @@ public:
                 const_cast<char*>(m_scratch.data()),
                 m_scratch.size());
         }
+        // re-expose the base method; the private inheritance hides it
+        using SI_CONVERTER::ConvertFromStore;
         const char * Data() { return m_scratch.data(); }
     private:
         std::string m_scratch;
@@ -656,7 +669,10 @@ public:
         );
 
 #ifdef SI_SUPPORT_IOSTREAMS
-    /** Load INI file data from an istream.
+    /** Load INI file data from an istream. Reads text INI data from the
+        stream until end-of-file. Streams containing a NUL (zero) byte are
+        rejected with SI_FAIL. Streams larger than SI_MAX_FILE_SIZE are
+        rejected with SI_FILE.
 
         @param a_istream    Stream to read from
 
@@ -1059,6 +1075,9 @@ public:
         bool            a_bForceReplace = false
         )
     {
+        if (!a_pSection) {
+            return SI_FAIL;
+        }
         return AddEntry(a_pSection, a_pKey, a_pValue, a_pComment, a_bForceReplace, true);
     }
 
@@ -1262,6 +1281,8 @@ private:
                             order and comment will be preserved this way.
         @param a_bCopyStrings   Should copies of the strings be made or not.
                             If false then the pointers will be used as is.
+        @param a_pInsertedSection If not NULL, set to true when this call
+                            created the section entry.
     */
     SI_Error AddEntry(
         const SI_CHAR * a_pSection,
@@ -1269,7 +1290,8 @@ private:
         const SI_CHAR * a_pValue,
         const SI_CHAR * a_pComment,
         bool            a_bForceReplace,
-        bool            a_bCopyStrings
+        bool            a_bCopyStrings,
+        bool *          a_pInsertedSection = NULL
         );
 
     /** Is the supplied character a whitespace character? */
@@ -1291,6 +1313,26 @@ private:
     /** Make a copy of the supplied string, replacing the original pointer */
     SI_Error CopyString(const SI_CHAR *& a_pString);
 
+    /** Reference to a section or key that was added by an incremental load */
+    struct AddedRef {
+        const SI_CHAR * pItem;
+        const SI_CHAR * pSection;
+        AddedRef(const SI_CHAR * a_pItem, const SI_CHAR * a_pSection)
+            : pItem(a_pItem)
+            , pSection(a_pSection)
+        { }
+    };
+    typedef std::vector<AddedRef> TAddedRefs;
+
+    /** Undo m_data changes from a failed incremental LoadData. Only sections
+        and keys that were newly created by this LoadData call are removed.
+        Values updated on keys that already existed before the failing entry
+        are not restored. */
+    void UndoIncrementalLoadData(
+        const TAddedRefs &  a_oAddedKeys,
+        const TAddedRefs &  a_oAddedSections
+        );
+
     /** Delete a string from the copied strings buffer if necessary */
     void DeleteString(const SI_CHAR * a_pString);
 
@@ -1304,6 +1346,7 @@ private:
     bool IsMultiLineData(const SI_CHAR * a_pData) const;
     bool ContainsNewLine(const SI_CHAR * a_pData) const;
     bool IsSingleLineQuotedValue(const SI_CHAR* a_pData) const;
+    bool MultiLineTextHasTag(const SI_CHAR * a_pText, const SI_CHAR * a_pTag) const;
     bool LoadMultiLineText(
         SI_CHAR *&          a_pData,
         const SI_CHAR *&    a_pVal,
@@ -1426,6 +1469,81 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::Reset()
     m_nOrder = 0;
 }
 
+namespace SI_Internal {
+
+#ifdef SI_CONVERT_ICU
+/** Convert a UChar file path to a newly allocated UTF-8 string for fopen. */
+inline SI_Error UCharPathToUtf8(const UChar * a_pPath, char *& a_pUtf8Path)
+{
+    a_pUtf8Path = NULL;
+    UErrorCode status = U_ZERO_ERROR;
+    int32_t uLen = 0;
+    u_strToUTF8(NULL, 0, &uLen, a_pPath, -1, &status);
+    if (U_FAILURE(status) && status != U_BUFFER_OVERFLOW_ERROR) {
+        return SI_FILE;
+    }
+    if (uLen < 0) {
+        return SI_FILE;
+    }
+    char * pBuf = new(std::nothrow) char[static_cast<size_t>(uLen) + 1];
+    if (!pBuf) {
+        return SI_NOMEM;
+    }
+    status = U_ZERO_ERROR;
+    u_strToUTF8(pBuf, uLen + 1, NULL, a_pPath, -1, &status);
+    if (U_FAILURE(status)) {
+        delete[] pBuf;
+        return SI_FILE;
+    }
+    a_pUtf8Path = pBuf;
+    return SI_OK;
+}
+#endif // SI_CONVERT_ICU
+
+#if defined(_WIN32) && !defined(_WIN32_WCE)
+typedef __int64 SI_FileOffset;
+inline int SI_FileSeek(FILE * a_fpFile, SI_FileOffset a_nOffset, int a_nOrigin) {
+    return _fseeki64(a_fpFile, a_nOffset, a_nOrigin);
+}
+inline SI_FileOffset SI_FileTell(FILE * a_fpFile) {
+    return _ftelli64(a_fpFile);
+}
+#elif defined(_POSIX_VERSION) || defined(__unix__) || defined(__APPLE__)
+typedef off_t SI_FileOffset;
+inline int SI_FileSeek(FILE * a_fpFile, SI_FileOffset a_nOffset, int a_nOrigin) {
+    return fseeko(a_fpFile, a_nOffset, a_nOrigin);
+}
+inline SI_FileOffset SI_FileTell(FILE * a_fpFile) {
+    return ftello(a_fpFile);
+}
+#else
+typedef long SI_FileOffset;
+inline int SI_FileSeek(FILE * a_fpFile, SI_FileOffset a_nOffset, int a_nOrigin) {
+    return fseek(a_fpFile, a_nOffset, a_nOrigin);
+}
+inline SI_FileOffset SI_FileTell(FILE * a_fpFile) {
+    return ftell(a_fpFile);
+}
+#endif
+
+/** Query the size of an open FILE and leave it positioned at offset 0. */
+inline bool GetFileSize(FILE * a_fpFile, size_t & a_uSize)
+{
+    a_uSize = 0;
+
+    if (SI_FileSeek(a_fpFile, 0, SEEK_END) != 0) {
+        return false;
+    }
+    const SI_FileOffset nSize = SI_FileTell(a_fpFile);
+    if (nSize < 0 || nSize > static_cast<SI_FileOffset>(SI_MAX_FILE_SIZE)) {
+        return false;
+    }
+    a_uSize = static_cast<size_t>(nSize);
+    return SI_FileSeek(a_fpFile, 0, SEEK_SET) == 0;
+}
+
+} // namespace SI_Internal
+
 template<class SI_CHAR, class SI_STRLESS, class SI_CONVERTER>
 SI_Error
 CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::LoadFile(
@@ -1465,9 +1583,14 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::LoadFile(
     fclose(fp);
     return rc;
 #else // !_WIN32 (therefore SI_CONVERT_ICU)
-    char szFile[256];
-    u_austrncpy(szFile, a_pwszFile, sizeof(szFile));
-    return LoadFile(szFile);
+    char * szFile = NULL;
+    SI_Error rcPath = SI_Internal::UCharPathToUtf8(a_pwszFile, szFile);
+    if (rcPath < 0) {
+        return rcPath;
+    }
+    SI_Error rc = LoadFile(szFile);
+    delete[] szFile;
+    return rc;
 #endif // _WIN32
 }
 #endif // SI_HAS_WIDE_FILE
@@ -1478,35 +1601,27 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::LoadFile(
     FILE * a_fpFile
     )
 {
-    // load the raw file data
-    int retval = fseek(a_fpFile, 0, SEEK_END);
-    if (retval != 0) {
+    // probe the file size (64-bit safe) and enforce the supported limits
+    // (SI_MAX_FILE_SIZE); the file is left positioned at offset 0
+    size_t uSize = 0;
+    if (!SI_Internal::GetFileSize(a_fpFile, uSize)) {
         return SI_FILE;
     }
-    long lSize = ftell(a_fpFile);
-    if (lSize < 0) {
-        return SI_FILE;
-    }
-    if (lSize == 0) {
+    if (uSize == 0) {
         return SI_OK;
     }
 
-    // check file size is within supported limits (SI_MAX_FILE_SIZE)
-    if (static_cast<size_t>(lSize) > SI_MAX_FILE_SIZE) {
-        return SI_FILE;
-    }
-
     // allocate and ensure NULL terminated
-    char * pData = new(std::nothrow) char[static_cast<size_t>(lSize) + 1];
+    char * pData = new(std::nothrow) char[uSize + 1];
     if (!pData) {
         return SI_NOMEM;
     }
-    pData[lSize] = 0;
-    
-    // load data into buffer
-    fseek(a_fpFile, 0, SEEK_SET);
-    size_t uRead = fread(pData, sizeof(char), lSize, a_fpFile);
-    if (uRead != (size_t) lSize) {
+    pData[uSize] = 0;
+
+    // load data into buffer, verifying that the read didn't come up short
+    // (e.g. the file was truncated between the probe and the read)
+    size_t uRead = fread(pData, sizeof(char), uSize, a_fpFile);
+    if (uRead != uSize) {
         delete[] pData;
         return SI_FILE;
     }
@@ -1580,15 +1695,48 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::LoadData(
     // already have stored some.
     bool bCopyStrings = (m_pData != NULL);
 
+    // snapshot the state so that a failed incremental load can be rolled back
+    size_t nStringsBefore = m_strings.size();
+    const SI_CHAR * pFileCommentBefore = m_pFileComment;
+    TAddedRefs oAddedSections;
+    TAddedRefs oAddedKeys;
+
     // find a file comment if it exists, this is a comment that starts at the
     // beginning of the file and continues until the first blank line.
     SI_Error rc = FindFileComment(pWork, bCopyStrings);
-    if (rc < 0) return rc;
 
     // add every entry in the file to the data table
-    while (FindEntry(pWork, pSection, pItem, pVal, pComment)) {
-        rc = AddEntry(pSection, pItem, pVal, pComment, false, bCopyStrings);
-        if (rc < 0) return rc;
+    while (rc >= 0 && FindEntry(pWork, pSection, pItem, pVal, pComment)) {
+        bool bInsertedSection = false;
+        rc = AddEntry(pSection, pItem, pVal, pComment, false, bCopyStrings,
+            &bInsertedSection);
+        if (rc < 0) {
+            break;
+        }
+
+        // track what this load added so that it can be undone on failure.
+        // Keys that already existed only had their value overwritten, so
+        // nothing needs to be undone for them.
+        if (bInsertedSection) {
+            oAddedSections.push_back(AddedRef(pSection, NULL));
+        }
+        if (pItem && rc == SI_INSERTED) {
+            oAddedKeys.push_back(AddedRef(pItem, pSection));
+        }
+    }
+
+    if (rc < 0) {
+        // remove everything that this load added and restore the previous
+        // file comment. When !bCopyStrings the added entries point into the
+        // buffer that we are about to free, and no strings were copied.
+        UndoIncrementalLoadData(oAddedKeys, oAddedSections);
+        m_pFileComment = pFileCommentBefore;
+        while (m_strings.size() > nStringsBefore) {
+            delete[] const_cast<SI_CHAR*>(m_strings.back().pItem);
+            m_strings.pop_back();
+        }
+        delete[] pData;
+        return rc;
     }
 
     // store these strings if we didn't copy them
@@ -1607,17 +1755,24 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::LoadData(
 template<class SI_CHAR, class SI_STRLESS, class SI_CONVERTER>
 SI_Error
 CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::LoadData(
-    std::istream & a_istream
+    std::istream &  a_istream
     )
 {
     std::string strData;
-    char szBuf[512];
-    do {
-        a_istream.get(szBuf, sizeof(szBuf), '\0');
-        strData.append(szBuf);
+    char buf[4096];
+    while (a_istream.read(buf, sizeof(buf)) || a_istream.gcount() > 0) {
+        const std::streamsize nRead = a_istream.gcount();
+        // reject binary data: an embedded NUL would silently truncate
+        // the text at that point
+        if (memchr(buf, 0, static_cast<size_t>(nRead))) {
+            return SI_FAIL;
+        }
+        if (strData.size() + static_cast<size_t>(nRead) > SI_MAX_FILE_SIZE) {
+            return SI_FILE;
+        }
+        strData.append(buf, static_cast<size_t>(nRead));
     }
-    while (a_istream.good());
-    return LoadData(strData);
+    return LoadData(strData.data(), strData.size());
 }
 #endif // SI_SUPPORT_IOSTREAMS
 
@@ -1659,6 +1814,7 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::FindEntry(
     ) const
 {
     a_pComment = NULL;
+    a_pVal = NULL;
 
     bool bHaveValue = false;
     SI_CHAR * pTrail = NULL;
@@ -1891,6 +2047,46 @@ CSimpleIniTempl<SI_CHAR, SI_STRLESS, SI_CONVERTER>::IsSingleLineQuotedValue(
         return true;
     }
 
+    // a value that is itself quoted needs quoting on save, or the loader
+    // would strip its quotes when the file is loaded again
+    if (a_pData > pStart + 1 && *pStart == '"' && *(a_pData - 1) == '"') {
+        return true;
+    }
+
+    return false;
+}
+
+template<class SI_CHAR, class SI_STRLESS, class SI_CONVERTER>
+bool
+CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::MultiLineTextHasTag(
+    const SI_CHAR * a_pText,
+    const SI_CHAR * a_pTag
+    ) const
+{
+    if (!a_pText || !a_pTag) {
+        return false;
+    }
+    std::basic_string<SI_CHAR> line;
+    const SI_CHAR * p = a_pText;
+    while (*p) {
+        const SI_CHAR * pEndOfLine = p;
+        while (*pEndOfLine && *pEndOfLine != '\n') {
+            ++pEndOfLine;
+        }
+        // the loader strips trailing whitespace before matching a tag
+        const SI_CHAR * pLineEnd = pEndOfLine;
+        while (pLineEnd > p && IsSpace(pLineEnd[-1])) {
+            --pLineEnd;
+        }
+        line.assign(p, static_cast<size_t>(pLineEnd - p));
+        if (!IsLess(line.c_str(), a_pTag) && !IsLess(a_pTag, line.c_str())) {
+            return true;
+        }
+        p = pEndOfLine;
+        if (*p == '\n') {
+            ++p;
+        }
+    }
     return false;
 }
 
@@ -2066,6 +2262,12 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::CopyString(
     else {
         for ( ; a_pString[uLen]; ++uLen) /*loop*/ ;
     }
+    // enforce the supported size limits (SI_MAX_FILE_SIZE) so that huge
+    // programmatic strings fail cleanly instead of attempting unbounded
+    // allocations
+    if (uLen >= (SI_MAX_FILE_SIZE / sizeof(SI_CHAR))) {
+        return SI_NOMEM;
+    }
     ++uLen; // NULL character
     SI_CHAR * pCopy = new(std::nothrow) SI_CHAR[uLen];
     if (!pCopy) {
@@ -2078,6 +2280,26 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::CopyString(
 }
 
 template<class SI_CHAR, class SI_STRLESS, class SI_CONVERTER>
+void
+CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::UndoIncrementalLoadData(
+    const TAddedRefs &  a_oAddedKeys,
+    const TAddedRefs &  a_oAddedSections
+    )
+{
+    // remove the keys first (Delete needs the section to still exist) and
+    // then any sections that this load created
+    typename TAddedRefs::const_iterator i = a_oAddedKeys.begin();
+    for (; i != a_oAddedKeys.end(); ++i) {
+        Delete(i->pSection, i->pItem, false);
+    }
+
+    i = a_oAddedSections.begin();
+    for (; i != a_oAddedSections.end(); ++i) {
+        Delete(i->pItem, NULL, false);
+    }
+}
+
+template<class SI_CHAR, class SI_STRLESS, class SI_CONVERTER>
 SI_Error
 CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::AddEntry(
     const SI_CHAR * a_pSection,
@@ -2085,11 +2307,19 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::AddEntry(
     const SI_CHAR * a_pValue,
     const SI_CHAR * a_pComment,
     bool            a_bForceReplace,
-    bool            a_bCopyStrings
+    bool            a_bCopyStrings,
+    bool *          a_pInsertedSection
     )
 {
     SI_Error rc;
     bool bInserted = false;
+    bool bInsertedSection = false;
+    bool bCopiedComment = false;
+    bool bCopiedKey = false;
+
+    if (a_pInsertedSection) {
+        *a_pInsertedSection = false;
+    }
 
     SI_ASSERT(!a_pComment || IsComment(*a_pComment));
 
@@ -2098,6 +2328,7 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::AddEntry(
     if (a_bCopyStrings && a_pComment) {
         rc = CopyString(a_pComment);
         if (rc < 0) return rc;
+        bCopiedComment = true;
     }
 
     // create the section entry if necessary
@@ -2107,7 +2338,12 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::AddEntry(
         // string needs to last beyond the end of this function
         if (a_bCopyStrings) {
             rc = CopyString(a_pSection);
-            if (rc < 0) return rc;
+            if (rc < 0) {
+                if (bCopiedComment) {
+                    DeleteString(a_pComment);
+                }
+                return rc;
+            }
         }
 
         // only set the comment if this is a section only entry
@@ -2123,6 +2359,10 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::AddEntry(
         std::pair<SectionIterator,bool> i = m_data.insert(oEntry);
         iSection = i.first;
         bInserted = true;
+        bInsertedSection = true;
+        if (a_pInsertedSection) {
+            *a_pInsertedSection = true;
+        }
     }
     if (!a_pKey) {
         // section only entries are specified with pItem as NULL
@@ -2151,6 +2391,7 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::AddEntry(
             a_pComment = pComment;
             rc = CopyString(a_pComment);
             if (rc < 0) return rc;
+            bCopiedComment = true;
         }
         Delete(a_pSection, a_pKey);
         iKey = keyval.end();
@@ -2169,12 +2410,34 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::AddEntry(
             // string needs to last beyond the end of this function
             // because we will be inserting the key next
             rc = CopyString(a_pKey);
-            if (rc < 0) return rc;
+            if (rc < 0) {
+                if (bInsertedSection) {
+                    m_data.erase(iSection);
+                    DeleteString(a_pSection);
+                }
+                if (bCopiedComment) {
+                    DeleteString(a_pComment);
+                }
+                return rc;
+            }
+            bCopiedKey = true;
         }
 
         // we always need a copy of the value
         rc = CopyString(a_pValue);
-        if (rc < 0) return rc;
+        if (rc < 0) {
+            if (bCopiedKey) {
+                DeleteString(a_pKey);
+            }
+            if (bInsertedSection) {
+                m_data.erase(iSection);
+                DeleteString(a_pSection);
+            }
+            if (bCopiedComment) {
+                DeleteString(a_pComment);
+            }
+            return rc;
+        }
     }
 
     // create the key entry
@@ -2185,6 +2448,12 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::AddEntry(
         }
         typename TKeyVal::value_type oEntry(oKey, static_cast<const SI_CHAR *>(NULL));
         iKey = keyval.insert(oEntry);
+    }
+    else {
+        // the key already exists and is being reused: release the previous
+        // value string stored in m_strings. DeleteString is a no-op for
+        // pointers that live inside the parsed data block.
+        DeleteString(iKey->second);
     }
 
     iKey->second = a_pValue;
@@ -2293,8 +2562,10 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::SetLongValue(
     // convert to output text
     SI_CHAR szOutput[64];
     SI_CONVERTER c(m_bStoreIsUtf8);
-    c.ConvertFromStore(szInput, strlen(szInput) + 1, 
-        szOutput, sizeof(szOutput) / sizeof(SI_CHAR));
+    if (!c.ConvertFromStore(szInput, strlen(szInput) + 1,
+            szOutput, sizeof(szOutput) / sizeof(SI_CHAR))) {
+        return SI_FAIL;
+    }
 
     // actually add it
     return AddEntry(a_pSection, a_pKey, szOutput, a_pComment, a_bForceReplace, true);
@@ -2349,16 +2620,18 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::SetDoubleValue(
     // convert to an ASCII string
     char szInput[64];
 #if __STDC_WANT_SECURE_LIB__ && !_WIN32_WCE
-    sprintf_s(szInput, "%f", a_nValue);
+    sprintf_s(szInput, "%.17g", a_nValue);
 #else // !__STDC_WANT_SECURE_LIB__
-    snprintf(szInput, sizeof(szInput), "%f", a_nValue);
+    snprintf(szInput, sizeof(szInput), "%.17g", a_nValue);
 #endif // __STDC_WANT_SECURE_LIB__
 
     // convert to output text
     SI_CHAR szOutput[64];
     SI_CONVERTER c(m_bStoreIsUtf8);
-    c.ConvertFromStore(szInput, strlen(szInput) + 1, 
-        szOutput, sizeof(szOutput) / sizeof(SI_CHAR));
+    if (!c.ConvertFromStore(szInput, strlen(szInput) + 1,
+            szOutput, sizeof(szOutput) / sizeof(SI_CHAR))) {
+        return SI_FAIL;
+    }
 
     // actually add it
     return AddEntry(a_pSection, a_pKey, szOutput, a_pComment, a_bForceReplace, true);
@@ -2418,8 +2691,10 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::SetBoolValue(
     // convert to output text
     SI_CHAR szOutput[64];
     SI_CONVERTER c(m_bStoreIsUtf8);
-    c.ConvertFromStore(pszInput, strlen(pszInput) + 1, 
-        szOutput, sizeof(szOutput) / sizeof(SI_CHAR));
+    if (!c.ConvertFromStore(pszInput, strlen(pszInput) + 1,
+            szOutput, sizeof(szOutput) / sizeof(SI_CHAR))) {
+        return SI_FAIL;
+    }
 
     // actually add it
     return AddEntry(a_pSection, a_pKey, szOutput, a_pComment, a_bForceReplace, true);
@@ -2593,9 +2868,14 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::SaveFile(
     fclose(fp);
     return rc;
 #else // !_WIN32 (therefore SI_CONVERT_ICU)
-    char szFile[256];
-    u_austrncpy(szFile, a_pwszFile, sizeof(szFile));
-    return SaveFile(szFile, a_bAddSignature);
+    char * szFile = NULL;
+    SI_Error rcPath = SI_Internal::UCharPathToUtf8(a_pwszFile, szFile);
+    if (rcPath < 0) {
+        return rcPath;
+    }
+    SI_Error rc = SaveFile(szFile, a_bAddSignature);
+    delete[] szFile;
+    return rc;
 #endif // _WIN32
 }
 #endif // SI_HAS_WIDE_FILE
@@ -2739,12 +3019,40 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::Save(
                     }
                     else if (m_bAllowMultiLine && IsMultiLineData(iValue->pItem)) {
                         // multi-line data needs to be processed specially to ensure
-                        // that we use the correct newline format for the current system
-                        a_oOutput.Write("<<<END_OF_TEXT" SI_NEWLINE_A);
+                        // that we use the correct newline format for the current
+                        // system. If the value itself contains a line that matches
+                        // the end tag then the saved file would be truncated on
+                        // reload, so pick a suffixed tag that doesn't collide.
+                        char szTag[64];
+                        SI_CHAR szTagSi[sizeof(szTag)/sizeof(szTag[0])];
+                        int nSuffix = 0;
+                        for (;;) {
+#if __STDC_WANT_SECURE_LIB__ && !_WIN32_WCE
+                            sprintf_s(szTag, nSuffix ? "END_OF_TEXT_%d" : "END_OF_TEXT", nSuffix);
+#else // !__STDC_WANT_SECURE_LIB__
+                            snprintf(szTag, sizeof(szTag), nSuffix ? "END_OF_TEXT_%d" : "END_OF_TEXT", nSuffix);
+#endif // __STDC_WANT_SECURE_LIB__
+                            if (!convert.ConvertFromStore(szTag, strlen(szTag) + 1,
+                                    szTagSi, sizeof(szTagSi) / sizeof(szTagSi[0]))) {
+                                return SI_FAIL;
+                            }
+                            if (!MultiLineTextHasTag(iValue->pItem, szTagSi)) {
+                                break;
+                            }
+                            if (++nSuffix > 100) {
+                                // bound the search: every retry rescans the
+                                // whole value, and a value with a hundred
+                                // colliding tag lines is adversarial
+                                return SI_FAIL;
+                            }
+                        }
+                        a_oOutput.Write("<<<");
+                        a_oOutput.Write(szTag);
+                        a_oOutput.Write(SI_NEWLINE_A);
                         if (!OutputMultiLineText(a_oOutput, convert, iValue->pItem)) {
                             return SI_FAIL;
                         }
-                        a_oOutput.Write("END_OF_TEXT");
+                        a_oOutput.Write(szTag);
                     }
                     else if (!m_bAllowMultiLine && ContainsNewLine(iValue->pItem)) {
                         // The value contains embedded newlines but SetMultiLine(false)
@@ -2780,21 +3088,22 @@ CSimpleIniTempl<SI_CHAR,SI_STRLESS,SI_CONVERTER>::OutputMultiLineText(
     const SI_CHAR * a_pText
     ) const
 {
-    const SI_CHAR * pEndOfLine;
-    SI_CHAR cEndOfLineChar = *a_pText;
-    while (cEndOfLineChar) {
+    std::basic_string<SI_CHAR> line;
+    while (*a_pText) {
         // find the end of this line
-        pEndOfLine = a_pText;
+        const SI_CHAR * pEndOfLine = a_pText;
         for (; *pEndOfLine && *pEndOfLine != '\n'; ++pEndOfLine) /*loop*/ ;
-        cEndOfLineChar = *pEndOfLine;
 
-        // temporarily null terminate, convert and output the line
-        *const_cast<SI_CHAR*>(pEndOfLine) = 0;
-        if (!a_oConverter.ConvertToStore(a_pText)) {
+        // copy the line before converting it so that the stored value is
+        // never modified, even if the output conversion fails partway through
+        line.assign(a_pText, static_cast<size_t>(pEndOfLine - a_pText));
+        a_pText = pEndOfLine;
+        if (*a_pText == '\n') {
+            ++a_pText;
+        }
+        if (!a_oConverter.ConvertToStore(line.c_str())) {
             return false;
         }
-        *const_cast<SI_CHAR*>(pEndOfLine) = cEndOfLineChar;
-        a_pText += (pEndOfLine - a_pText) + 1;
         a_oOutput.Write(a_oConverter.Data());
         a_oOutput.Write(SI_NEWLINE_A);
     }

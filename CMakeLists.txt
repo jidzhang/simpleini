@@ -16,6 +16,9 @@ endif()
 
 set(EXPORT_NAMESPACE "${PROJECT_NAME}::")
 
+# GNUInstallDirs must be included before CMAKE_INSTALL_INCLUDEDIR is used
+include(GNUInstallDirs)
+
 # SimpleIni is a header-only library. SI_CONVERT_GENERIC uses built-in
 # locale-independent UTF-8 conversion; no additional source files are required.
 add_library(${PROJECT_NAME} INTERFACE)
@@ -24,8 +27,6 @@ target_include_directories(${PROJECT_NAME} INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
-
-include(GNUInstallDirs)
 
 include(CMakePackageConfigHelpers)
 write_basic_package_version_file(${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}ConfigVersion.cmake

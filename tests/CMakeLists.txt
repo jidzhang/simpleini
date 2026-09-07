@@ -40,6 +40,8 @@ set(TEST_SOURCES
 	ts-casesensitivity.cpp
 	ts-generic.cpp
 	ts-utf8-conversion.cpp
+	ts-upstream-sync.cpp
+	ts-iostream.cpp
 )
 
 # ts-wchar.cpp and ts-wcharpath.cpp use wchar_t file APIs (_wfopen/_wremove)
@@ -62,8 +64,17 @@ endif()
 
 add_test(NAME tests COMMAND tests WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 target_link_libraries(tests PRIVATE ${PROJECT_NAME} GTest::gtest_main)
+# The oversize tests in ts-upstream-sync.cpp exercise the SI_MAX_FILE_SIZE
+# limit; shrink it to 1 MiB so they don't allocate 1 GiB. It must be defined
+# for every translation unit of this target, not in a single source file.
+target_compile_definitions(tests PRIVATE SI_MAX_FILE_SIZE=1048576)
 if(APPLE)
 	target_link_libraries(tests PRIVATE iconv)
+endif()
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+	# ts-upstream-sync.cpp wraps malloc to inject allocation failures for the
+	# LoadData rollback regression tests
+	target_link_options(tests PRIVATE "-Wl,--wrap=malloc")
 endif()
 
 add_custom_command(

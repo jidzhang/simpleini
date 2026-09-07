@@ -260,6 +260,80 @@ void test_numeric() {
 }
 
 // ============================================================
+// Test: SetDoubleValue must save full precision ("%.17g"), so a
+// double round-trips exactly (upstream cee498b).
+// ============================================================
+void test_double_precision() {
+    CSimpleIniA ini;
+    ini.SetDoubleValue("s", "pi", 3.141592653589793);
+    double d = ini.GetDoubleValue("s", "pi", 0.0);
+    TEST_ASSERT(d == 3.141592653589793);
+
+    // "%f" formatting lost small magnitudes entirely ("0.000000")
+    ini.SetDoubleValue("s", "small", 1e-300);
+    d = ini.GetDoubleValue("s", "small", 0.0);
+    TEST_ASSERT(d == 1e-300);
+
+    // shortest form for exact values, no padding zeros
+    CSimpleIniA ini2;
+    ini2.SetDoubleValue("s", "k", 0.5);
+    std::string output;
+    TEST_ASSERT_EQ(ini2.Save(output), SI_OK);
+    TEST_ASSERT(output.find("k = 0.5\n") != std::string::npos);
+    TEST_ASSERT(output.find("0.500000") == std::string::npos);
+}
+
+// ============================================================
+// Test: with SetQuotes, a value that is itself quoted must be
+// wrapped a second time on save, or the reload strips its quotes
+// (upstream 3a5e854).
+// ============================================================
+void test_quotes_wraps_quoted_value() {
+    CSimpleIniA ini;
+    ini.SetQuotes(true);
+    ini.SetValue("s", "k", "\"abc\"");
+    std::string output;
+    TEST_ASSERT_EQ(ini.Save(output), SI_OK);
+    TEST_ASSERT(output.find("k = \"\"abc\"\"\n") != std::string::npos);
+
+    CSimpleIniA ini2;
+    ini2.SetQuotes(true);
+    TEST_ASSERT_EQ(ini2.LoadData(output), SI_OK);
+    TEST_ASSERT_STR_EQ(ini2.GetValue("s", "k", "?"), "\"abc\"");
+}
+
+// ============================================================
+// Test: a multi-line value containing a line that matches the
+// END_OF_TEXT tag must survive a save/load round-trip; the writer
+// picks a suffixed tag (upstream cee498b).
+// ============================================================
+void test_multiline_endtag_collision() {
+    CSimpleIniA ini;
+    ini.SetUnicode();
+    ini.SetMultiLine(true);
+    ini.SetValue("s", "k", "line1\nEND_OF_TEXT\nline3");
+    std::string output;
+    TEST_ASSERT_EQ(ini.Save(output), SI_OK);
+    TEST_ASSERT(output.find("<<<END_OF_TEXT_1\n") != std::string::npos);
+
+    CSimpleIniA ini2;
+    ini2.SetUnicode();
+    ini2.SetMultiLine(true);
+    TEST_ASSERT_EQ(ini2.LoadData(output), SI_OK);
+    TEST_ASSERT_STR_EQ(ini2.GetValue("s", "k", "?"), "line1\nEND_OF_TEXT\nline3");
+}
+
+// ============================================================
+// Test: SetValue with a NULL section must fail cleanly
+// (upstream cee498b).
+// ============================================================
+void test_setvalue_null_section() {
+    CSimpleIniA ini;
+    TEST_ASSERT_EQ(ini.SetValue(NULL, "k", "v"), SI_FAIL);
+    TEST_ASSERT(ini.IsEmpty());
+}
+
+// ============================================================
 // Test: SetAllowKeyOnly - key-only entries must not inherit the
 // previous key's value (Bug 1 regression).
 // ============================================================
@@ -504,6 +578,10 @@ int main() {
     RUN_TEST(no_section);
     RUN_TEST(empty_value);
     RUN_TEST(numeric);
+    RUN_TEST(double_precision);
+    RUN_TEST(quotes_wraps_quoted_value);
+    RUN_TEST(multiline_endtag_collision);
+    RUN_TEST(setvalue_null_section);
     RUN_TEST(keyonly_no_inherit);
     RUN_TEST(reset_order);
     RUN_TEST(save_multiline_disabled_fails);
